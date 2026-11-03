@@ -1,3 +1,4 @@
+import { appendFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, inject, it } from 'vitest';
 import type { Charge, Dispute, Refund, WebhookEvent } from '../src/common/types.js';
 import { CREATED, DAY, startHarness, type Harness } from './support/harness.js';
@@ -34,6 +35,13 @@ function chargeRefundedEvent(id: string, object: Charge, created = CREATED): Web
 
 function disputeEvent(id: string, object: Dispute, created = CREATED): WebhookEvent {
   return { id, type: 'charge.dispute.created', created, data: { object } };
+}
+
+/** Record the number a failing spec actually observed, so the review can report it. */
+function record(finding: string, what: string, observed: number, expected: number): void {
+  const file = process.env.OBSERVED_FILE;
+  if (!file) return;
+  appendFileSync(file, `${JSON.stringify({ finding, what, observed, expected })}\n`, 'utf8');
 }
 
 describe('payments ledger review', () => {
@@ -89,28 +97,36 @@ describe('payments ledger review', () => {
     const event = chargeEvent('evt_1', charge('ch_1', 1000));
     await h.deliver(event);
     await h.deliver(event);
-    expect(await balance(creatorAccount)).toBe(800);
+    const got = await balance(creatorAccount);
+    record('F1', 'creator balance (cents)', got, 800);
+    expect(got).toBe(800);
   });
 
   it('F2 two events for one occurrence credit the creator once', async () => {
     const c = charge('ch_1', 1000);
     await h.deliver(chargeEvent('evt_1', c));
     await h.deliver(chargeEvent('evt_2', c));
-    expect(await balance(creatorAccount)).toBe(800);
+    const got = await balance(creatorAccount);
+    record('F2', 'creator balance (cents)', got, 800);
+    expect(got).toBe(800);
   });
 
   it('F3 an out-of-order refund is applied once the capture exists', async () => {
     const refunded = { ...charge('ch_1', 1000), amount_refunded: 1000 };
     await h.deliver(chargeRefundedEvent('evt_refund', refunded));
     await h.deliver(chargeEvent('evt_capture', charge('ch_1', 1000)));
-    expect(await balance(creatorAccount)).toBe(0);
+    const got = await balance(creatorAccount);
+    record('F3', 'creator balance (cents)', got, 0);
+    expect(got).toBe(0);
   });
 
   it('F4 a second partial refund is applied', async () => {
     await h.deliver(chargeEvent('evt_capture', charge('ch_1', 1000)));
     await h.deliver(refundEvent('evt_r1', refund('re_1', 300, 'ch_1')));
     await h.deliver(refundEvent('evt_r2', refund('re_2', 300, 'ch_1')));
-    expect(await balance(creatorAccount)).toBe(320);
+    const got = await balance(creatorAccount);
+    record('F4', 'creator balance (cents)', got, 320);
+    expect(got).toBe(320);
     expect(await balance(referrerAccount)).toBe(8);
     expect(await balance(platformAccount)).toBe(72);
   });
@@ -118,9 +134,11 @@ describe('payments ledger review', () => {
   it('F5 a partial refund splits without rounding drift', async () => {
     await h.deliver(chargeEvent('evt_capture', charge('ch_1', 1000)));
     await h.deliver(refundEvent('evt_r', refund('re_1', 13, 'ch_1')));
+    const got = await balance(platformAccount);
+    record('F5', 'platform balance (cents)', got, 177);
     expect(await balance(creatorAccount)).toBe(790);
     expect(await balance(referrerAccount)).toBe(20);
-    expect(await balance(platformAccount)).toBe(177);
+    expect(got).toBe(177);
   });
 
   it('F6 reconciliation flags an amount drift per creator', async () => {
@@ -128,7 +146,9 @@ describe('payments ledger review', () => {
     h.provider.seedCapture({ id: c.id, amount: c.amount, creator_id: c.metadata.creator_id, referrer_id: c.metadata.referrer_id, created: CREATED });
     await h.deliver(chargeEvent('evt_capture', c));
     await h.pool.query('update ledger_lines set amount_cents = 700 where account = $1', [creatorAccount]);
-    expect(await reconcile()).toEqual([{ creator_id: CREATOR, ledger_cents: 700, provider_cents: 800 }]);
+    const diffs = await reconcile();
+    record('F6', 'reconciliation differences reported', diffs.length, 1);
+    expect(diffs).toEqual([{ creator_id: CREATOR, ledger_cents: 700, provider_cents: 800 }]);
   });
 
   it('F7 a lost capture response is retried with one idempotency key', async () => {
@@ -139,15 +159,21 @@ describe('payments ledger review', () => {
       body: JSON.stringify({ amount: 1000, creator_id: CREATOR, referrer_id: REFERRER }),
     });
     expect(response.status).toBe(200);
-    expect(h.provider.captureCount()).toBe(1);
-    expect(h.provider.totalCapturedCents()).toBe(1000);
+    const count = h.provider.captureCount();
+    const total = h.provider.totalCapturedCents();
+    record('F7', 'captures created', count, 1);
+    record('F7', 'total captured (cents)', total, 1000);
+    expect(count).toBe(1);
+    expect(total).toBe(1000);
   });
 
   it('F8 a dispute reverses the referral reward', async () => {
     await h.deliver(chargeEvent('evt_capture', charge('ch_1', 1000)));
     await h.deliver(disputeEvent('evt_disp', dispute('di_1', 'ch_1', 1000)));
+    const got = await balance(referrerAccount);
+    record('F8', 'referral balance (cents)', got, 0);
     expect(await balance(creatorAccount)).toBe(0);
-    expect(await balance(referrerAccount)).toBe(0);
+    expect(got).toBe(0);
     expect(await balance(platformAccount)).toBe(0);
   });
 
@@ -159,7 +185,9 @@ describe('payments ledger review', () => {
       body: JSON.stringify({ creator_id: CREATOR, amount: 800, client_reference: 'po_1' }),
     });
     expect(response.status).toBe(200);
-    expect(h.provider.payoutCount()).toBe(1);
+    const count = h.provider.payoutCount();
+    record('F9', 'payouts created', count, 1);
+    expect(count).toBe(1);
     expect(h.provider.payoutsByReference('po_1').length).toBe(1);
   });
 });
