@@ -1,0 +1,106 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createServer, type AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import pg from 'pg';
+import type { TestProject } from 'vitest/node';
+
+declare module 'vitest' {
+  export interface ProvidedContext {
+    databaseUrl: string;
+  }
+}
+
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+
+const SCHEMA_FILES = {
+  v1: [join(repoRoot, 'src', 'v1', 'schema.sql')],
+  v2: [join(repoRoot, 'src', 'common', 'schema.sql')],
+} as const;
+
+/**
+ * One real Postgres for the whole run.
+ *  - DATABASE_URL set: use that server (CI uses a postgres service container).
+ *  - otherwise: start Postgres 16 with `embedded-postgres` under the OS temp dir.
+ * Either way the tests get a brand-new database that is dropped at the end.
+ */
+export default async function setup(project: TestProject) {
+  const target = process.env.TARGET === 'v1' ? 'v1' : 'v2';
+  const schemaFiles = SCHEMA_FILES[target];
+  const external = (process.env.DATABASE_URL || '').replace(/"/g, '');
+  let baseUrl = external;
+  let stopEmbedded: (() => Promise<void>) | undefined;
+
+  if (!external) {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'payments-ledger-pg-'));
+    const port = await freePort();
+    const { default: EmbeddedPostgres } = await import('embedded-postgres');
+    const output: string[] = [];
+    const keep = (message: unknown) => output.push(...describe(message).split(/\r?\n/));
+    const server = new EmbeddedPostgres({
+      databaseDir: join(dataRoot, 'data'),
+      port,
+      user: 'postgres',
+      password: 'postgres',
+      persistent: false,
+      onLog: keep,
+      onError: keep,
+    });
+    try {
+      await server.initialise();
+      await server.start();
+    } catch (reason) {
+      throw new Error(`embedded-postgres failed to start: ${describe(reason)}\n${output.slice(-40).join('\n')}`);
+    }
+    baseUrl = `postgres://postgres:postgres@127.0.0.1:${port}/postgres`;
+    stopEmbedded = async () => {
+      await server.stop();
+      rmSync(dataRoot, { recursive: true, force: true });
+    };
+  }
+
+  const dbName = `payments_ledger_test_${process.pid}_${Date.now()}`;
+  await runSql(baseUrl, `create database ${dbName}`);
+  const databaseUrl = withDatabase(baseUrl, dbName);
+  for (const file of schemaFiles) await runSql(databaseUrl, readFileSync(file, 'utf8'));
+
+  project.provide('databaseUrl', databaseUrl);
+
+  return async () => {
+    await runSql(baseUrl, `drop database if exists ${dbName} with (force)`);
+    await stopEmbedded?.();
+  };
+}
+
+function describe(value: unknown): string {
+  if (value instanceof Error) return value.stack ?? value.message;
+  return typeof value === 'string' ? value : String(value);
+}
+
+async function runSql(url: string, sql: string): Promise<void> {
+  const client = new pg.Client({ connectionString: url });
+  await client.connect();
+  try {
+    await client.query(sql);
+  } finally {
+    await client.end();
+  }
+}
+
+function withDatabase(url: string, dbName: string): string {
+  const parsed = new URL(url);
+  parsed.pathname = `/${dbName}`;
+  return parsed.toString();
+}
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address() as AddressInfo;
+      probe.close(() => resolve(port));
+    });
+  });
+}
