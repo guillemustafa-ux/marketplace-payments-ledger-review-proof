@@ -75,7 +75,7 @@ export function createV2Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
   }
 
   async function payout(input: { creator_id: string; amount: number; client_reference: string }): Promise<PayoutOutcome> {
-    // FIX F9: persist the intent with a client_reference before sending.
+    // Persist the intent with a client_reference before sending (the F9 fix continues in sendPayout).
     await pool.query(
       'insert into payout_intents (client_reference, status) values ($1, $2) on conflict (client_reference) do nothing',
       [input.client_reference, 'pending'],
@@ -162,7 +162,7 @@ export function createV2Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
       return { status: 'unknown' };
     } catch {
       // FIX F9: after an unknown outcome, look the payout up by client_reference; if the
-      // lookup cannot decide, stop and escalate — never resend blindly.
+      // lookup cannot decide, stop and escalate, never resend blindly.
       const found = await lookupPayout(input.client_reference);
       if (found) {
         await markPayoutPaid(input, found.id, found.created ?? 1730000000);
@@ -219,7 +219,7 @@ export function createV2Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
       'insert into charges (charge_id, amount_cents, creator_id, referrer_id) values ($1, $2, $3, $4) on conflict (charge_id) do nothing',
       [charge.id, charge.amount, charge.metadata.creator_id, charge.metadata.referrer_id],
     );
-    // FIX F3: apply any refund parked before this capture arrived.
+    // Apply any refund that was parked before this capture arrived (see the F3 fix below).
     await applyPendingRefunds(client, charge.id, day);
   }
 

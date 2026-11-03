@@ -1,89 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+﻿import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { F_NAMES, FINDINGS, SEVERITY, findingId, locateMarkers, root } from './findings.mjs';
 import { runVitest } from './run-vitest.mjs';
-
-const root = fileURLToPath(new URL('..', import.meta.url));
-const F_NAMES = ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9'];
-
-const SEVERITY = {
-  F1: 'Critical',
-  F2: 'Critical',
-  F3: 'High',
-  F4: 'High',
-  F5: 'Medium',
-  F6: 'High',
-  F7: 'Critical',
-  F8: 'Medium',
-  F9: 'Critical',
-};
-
-const FINDINGS = {
-  F1: {
-    title: 'A redelivered webhook event credits the creator twice',
-    fix: 'Store each event id under a unique constraint in the same transaction as its ledger entries, so a redelivered event is a no-op.',
-  },
-  F2: {
-    title: 'Two events for one occurrence credit the creator twice',
-    fix: 'Key every ledger transaction by (provider object id, entry type), so two events that describe the same occurrence produce one transaction.',
-  },
-  F3: {
-    title: 'An out-of-order refund is dropped and the creator keeps the full earnings',
-    fix: 'Park a refund that arrives before its capture and apply it once the capture exists.',
-  },
-  F4: {
-    title: 'A second partial refund is dropped as a duplicate',
-    fix: 'Key refunds by the refund id, not by (charge id, type).',
-  },
-  F5: {
-    title: 'A partial refund rounds each line and drifts by cents',
-    fix: 'Split with integer math and assign the remainder to one party, so the parts sum exactly to the refund.',
-  },
-  F6: {
-    title: 'Reconciliation compares counts, so an amount drift stays green',
-    fix: 'Compare the amount per creator and per day between the ledger and the provider.',
-  },
-  F7: {
-    title: 'A lost capture response is retried with a fresh idempotency key',
-    fix: 'Generate one idempotency key per money movement, store it before the first send, and reuse it on every retry.',
-  },
-  F8: {
-    title: 'A dispute reverses the creator earnings but leaves the referral reward paid',
-    fix: 'Reverse the creator earnings and the referral reward in the same ledger transaction.',
-  },
-  F9: {
-    title: 'An unknown payout outcome is retried blindly and pays twice',
-    fix: 'Persist the payout intent with a client_reference before sending; after an unknown outcome look it up by client_reference, and stop and escalate if the lookup cannot decide.',
-  },
-};
-
-function findingId(name) {
-  const match = /\bF([1-9])\b/.exec(name);
-  return match ? `F${match[1]}` : null;
-}
-
-function walk(dir) {
-  const out = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walk(full));
-    else if (entry.isFile() && entry.name.endsWith('.ts')) out.push(full);
-  }
-  return out;
-}
-
-function locateDefectMarkers() {
-  const locations = {};
-  for (const file of walk(join(root, 'src', 'v1'))) {
-    const lines = readFileSync(file, 'utf8').split(/\r?\n/);
-    lines.forEach((line, index) => {
-      const match = /\/\/\s*DEFECT\s+(F[1-9])/.exec(line);
-      if (match) locations[match[1]] = `${relative(root, file).replace(/\\/g, '/')}:${index + 1}`;
-    });
-  }
-  return locations;
-}
 
 function readObserved(file) {
   if (!existsSync(file)) return {};
@@ -140,7 +59,7 @@ if (v2.failed.length > 0) {
 }
 
 // 3. Locate the defects (computed from the // DEFECT F<n> markers, never typed).
-const locations = locateDefectMarkers();
+const { locations } = locateMarkers('v1', 'DEFECT');
 if (Object.keys(locations).length !== 9) {
   console.error(`review FAILED: expected 9 // DEFECT markers in src/v1, found ${Object.keys(locations).length}.`);
   process.exit(1);

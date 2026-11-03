@@ -1,3 +1,6 @@
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
+import { root } from './findings.mjs';
 import { runVitest } from './run-vitest.mjs';
 
 // npm test = the specs on v2 (all green) plus the controls on v1 (green on both versions).
@@ -23,3 +26,7 @@ if (v1.failed.length > 0) {
 }
 
 console.log(`\nnpm test OK: ${v2.passed} specs passed on v2, ${v1.passed} controls passed on v1.`);
+
+// The README's numbers and locations are generated; fail if they are stale.
+const readme = spawnSync(process.execPath, [join(root, 'scripts', 'readme.mjs'), '--check'], { stdio: 'inherit' });
+if (readme.status !== 0) process.exit(1);

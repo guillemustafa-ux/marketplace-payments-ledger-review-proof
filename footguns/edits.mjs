@@ -210,7 +210,7 @@ export const EDITS = {
     {
       file: 'src/v2/ledger.ts',
       find: `  async function payout(input: { creator_id: string; amount: number; client_reference: string }): Promise<PayoutOutcome> {
-    // FIX F9: persist the intent with a client_reference before sending.
+    // Persist the intent with a client_reference before sending (the F9 fix continues in sendPayout).
     await pool.query(
       'insert into payout_intents (client_reference, status) values ($1, $2) on conflict (client_reference) do nothing',
       [input.client_reference, 'pending'],
@@ -239,7 +239,7 @@ export const EDITS = {
       return { status: 'unknown' };
     } catch {
       // FIX F9: after an unknown outcome, look the payout up by client_reference; if the
-      // lookup cannot decide, stop and escalate — never resend blindly.
+      // lookup cannot decide, stop and escalate, never resend blindly.
       const found = await lookupPayout(input.client_reference);
       if (found) {
         await markPayoutPaid(input, found.id, found.created ?? 1730000000);

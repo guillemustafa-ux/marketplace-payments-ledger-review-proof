@@ -9,7 +9,8 @@
     "test": "node scripts/test.mjs",
     "typecheck": "tsc --noEmit",
     "review": "node scripts/review.mjs",
-    "footgun": "node scripts/footgun.mjs"
+    "footgun": "node scripts/footgun.mjs",
+    "readme": "node scripts/readme.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
