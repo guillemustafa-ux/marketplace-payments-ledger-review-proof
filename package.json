@@ -1,5 +1,5 @@
 {
-  "name": "payments-ledger-review-proof",
+  "name": "marketplace-payments-ledger-review-proof",
   "private": true,
   "type": "module",
   "engines": {

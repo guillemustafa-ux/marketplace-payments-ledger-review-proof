@@ -1,4 +1,4 @@
-# payments-ledger-review-proof
+# marketplace-payments-ledger-review-proof
 
 An independent code review of a synthetic marketplace payments backend that anyone can re-run
 offline. The backend ships in two versions: **v1** with planted money defects and **v2** with
