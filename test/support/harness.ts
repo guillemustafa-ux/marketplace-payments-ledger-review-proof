@@ -5,6 +5,7 @@ import { startFakeProvider, type FakeProvider } from '../../src/common/fake-prov
 import { dayOf } from '../../src/common/math.js';
 import type { WebhookEvent } from '../../src/common/types.js';
 import { signPayload } from '../../src/common/webhook.js';
+import { createV1Ledger } from '../../src/v1/ledger.js';
 import { createV2Ledger } from '../../src/v2/ledger.js';
 
 export const WEBHOOK_SECRET = 'whsec_test_secret';
@@ -26,7 +27,8 @@ export interface Harness {
 export async function startHarness(databaseUrl: string): Promise<Harness> {
   const pool = new pg.Pool({ connectionString: databaseUrl });
   const provider = await startFakeProvider();
-  const ledger = createV2Ledger({ pool, providerUrl: provider.url });
+  const deps = { pool, providerUrl: provider.url };
+  const ledger = process.env.TARGET === 'v1' ? createV1Ledger(deps) : createV2Ledger(deps);
   const app: RunningApp = await startApp({ ledger, webhookSecret: WEBHOOK_SECRET });
 
   return {

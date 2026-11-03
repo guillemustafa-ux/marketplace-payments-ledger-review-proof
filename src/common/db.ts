@@ -12,9 +12,15 @@ export async function applySchema(pool: Pool, files: string[]): Promise<void> {
 
 /** Wipe every table between test cases (tests share one database). */
 export async function truncateAll(pool: Pool): Promise<void> {
-  await pool.query(
-    'truncate table webhook_events, payout_intents, pending_refunds, ledger_lines, ledger_transactions, charges restart identity cascade',
-  );
+  await pool.query('truncate table charges, ledger_lines, ledger_transactions restart identity cascade');
+  // v2-only tables: absent from the v1 schema, so a missing relation is fine.
+  for (const table of ['webhook_events', 'pending_refunds', 'payout_intents']) {
+    try {
+      await pool.query(`truncate table ${table} restart identity`);
+    } catch (error) {
+      if (!String(error).includes('does not exist')) throw error;
+    }
+  }
 }
 
 /** Sum of all ledger lines for one account (positive = credit, negative = debit). */
