@@ -100,6 +100,10 @@ describe('payments ledger review', () => {
     const got = await balance(creatorAccount);
     record('F1', 'creator balance (cents)', got, 800);
     expect(got).toBe(800);
+    // The fix stores the event id under a unique constraint; a redelivered event is
+    // skipped before it can touch the ledger.
+    const events = await h.pool.query('select count(*)::int as n from webhook_events where event_id = $1', ['evt_1']);
+    expect(Number(events.rows[0].n)).toBe(1);
   });
 
   it('F2 two events for one occurrence credit the creator once', async () => {

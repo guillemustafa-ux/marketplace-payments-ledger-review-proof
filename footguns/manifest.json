@@ -1,0 +1,38 @@
+{
+  "f1": {
+    "description": "Reintroduce F1: drop the webhook event-id dedup, so a redelivered event credits the creator twice.",
+    "expectedFailures": ["F1 a redelivered event credits the creator once"]
+  },
+  "f2": {
+    "description": "Reintroduce F2: unkey the ledger transaction, so two events for one occurrence credit twice.",
+    "expectedFailures": ["F2 two events for one occurrence credit the creator once"]
+  },
+  "f3": {
+    "description": "Reintroduce F3: drop an out-of-order refund instead of parking it.",
+    "expectedFailures": ["F3 an out-of-order refund is applied once the capture exists"]
+  },
+  "f4": {
+    "description": "Reintroduce F4: key refunds by the charge id, dropping a second partial refund.",
+    "expectedFailures": ["F4 a second partial refund is applied"]
+  },
+  "f5": {
+    "description": "Reintroduce F5: round each refund line independently, drifting by cents.",
+    "expectedFailures": ["F5 a partial refund splits without rounding drift"]
+  },
+  "f6": {
+    "description": "Reintroduce F6: reconcile by count instead of amount per creator.",
+    "expectedFailures": ["F6 reconciliation flags an amount drift per creator"]
+  },
+  "f7": {
+    "description": "Reintroduce F7: a fresh idempotency key per capture attempt.",
+    "expectedFailures": ["F7 a lost capture response is retried with one idempotency key"]
+  },
+  "f8": {
+    "description": "Reintroduce F8: a dispute leaves the referral reward paid.",
+    "expectedFailures": ["F8 a dispute reverses the referral reward"]
+  },
+  "f9": {
+    "description": "Reintroduce F9: an unknown payout outcome is resent blindly.",
+    "expectedFailures": ["F9 an unknown payout outcome is looked up, not retried blindly"]
+  }
+}
