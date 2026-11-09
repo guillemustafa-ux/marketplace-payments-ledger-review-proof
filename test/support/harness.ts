@@ -19,8 +19,12 @@ export interface Harness {
   pool: pg.Pool;
   truncate(): Promise<void>;
   deliver(event: WebhookEvent): Promise<Response>;
-  /** Sign with an arbitrary secret (the tampered-payload control uses the wrong one). */
+  /** Sign with an arbitrary secret (the signature control uses the wrong one). */
   deliverWithSecret(event: WebhookEvent, secret: string): Promise<Response>;
+  /** Sign `signed` with the right secret but send `sent` as the body (a tampered payload). */
+  deliverTampered(signed: WebhookEvent, sent: WebhookEvent): Promise<Response>;
+  /** Stop the app and start a new one, with a new ledger instance, on the same database and provider. */
+  restartApp(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -35,30 +39,38 @@ export async function startHarness(databaseUrl: string): Promise<Harness> {
   const pool = new pg.Pool({ connectionString: databaseUrl });
   const provider = await startFakeProvider();
   const deps = { pool, providerUrl: provider.url };
-  const ledger = target() === 'v1' ? createV1Ledger(deps) : createV2Ledger(deps);
-  const app: RunningApp = await startApp({ ledger, webhookSecret: WEBHOOK_SECRET });
+  const start = () =>
+    startApp({ ledger: target() === 'v1' ? createV1Ledger(deps) : createV2Ledger(deps), webhookSecret: WEBHOOK_SECRET });
+  let app: RunningApp = await start();
 
-  return {
+  const harness: Harness = {
     appUrl: app.url,
     provider,
     pool,
     truncate: () => truncateAll(pool),
-    deliver: (event) => postWebhook(app.url, event, WEBHOOK_SECRET),
-    deliverWithSecret: (event, secret) => postWebhook(app.url, event, secret),
+    deliver: (event) => postWebhook(harness.appUrl, event, WEBHOOK_SECRET),
+    deliverWithSecret: (event, secret) => postWebhook(harness.appUrl, event, secret),
+    deliverTampered: (signed, sent) => postWebhook(harness.appUrl, signed, WEBHOOK_SECRET, JSON.stringify(sent)),
+    restartApp: async () => {
+      await app.close();
+      app = await start();
+      harness.appUrl = app.url;
+    },
     close: async () => {
       await app.close();
       await provider.close();
       await pool.end();
     },
   };
+  return harness;
 }
 
-async function postWebhook(appUrl: string, event: WebhookEvent, secret: string): Promise<Response> {
+async function postWebhook(appUrl: string, event: WebhookEvent, secret: string, sentBody?: string): Promise<Response> {
   const body = JSON.stringify(event);
   const t = event.created;
   return fetch(`${appUrl}/webhooks`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'stripe-signature': signPayload(body, secret, t) },
-    body,
+    body: sentBody ?? body,
   });
 }

@@ -7,7 +7,7 @@
     "description": "Reintroduce F2: unkey the ledger transaction, so two events for one occurrence credit twice. F7's repeated order gets the same charge back from the provider and records it twice, so it fails too.",
     "expectedFailures": [
       "F2 two events for one occurrence credit the creator once",
-      "F7 a lost capture response and a repeated order capture once"
+      "F7 a lost capture response and an order repeated after a restart capture once"
     ]
   },
   "f3": {
@@ -31,7 +31,7 @@
   },
   "f7": {
     "description": "Reintroduce F7: a fresh idempotency key per capture attempt, with no key stored per order.",
-    "expectedFailures": ["F7 a lost capture response and a repeated order capture once"]
+    "expectedFailures": ["F7 a lost capture response and an order repeated after a restart capture once"]
   },
   "f8": {
     "description": "Reintroduce F8: a dispute reverses only the creator earnings.",

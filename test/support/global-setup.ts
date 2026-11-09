@@ -21,7 +21,7 @@ const SCHEMA_FILES = {
 
 /**
  * One real Postgres for the whole run.
- *  - DATABASE_URL set: use that server (CI uses a postgres service container).
+ *  - DATABASE_URL set: use that server (any Postgres you run yourself).
  *  - otherwise: start Postgres 16 with `embedded-postgres` under the OS temp dir.
  * Either way the tests get a brand-new database that is dropped at the end.
  */

@@ -74,13 +74,16 @@ else {
     if (Number(stats[key]) !== value) problems.push(`SAMPLE_REPORT.md ${key} is ${stats[key]}, expected ${value} (run npm run review)`);
   }
 }
+const verdict = `**Verdict (v1): ${F_NAMES.length} findings open (${severityCounts.Critical} Critical, ${severityCounts.High} High, ${severityCounts.Medium} Medium).** Retest against v2: ${F_NAMES.length} of ${F_NAMES.length} closed.`;
+if (!report.includes(verdict)) problems.push('SAMPLE_REPORT.md verdict line does not match the findings (run npm run review)');
 const reportRows = report.split(/\r?\n/);
 F_NAMES.forEach((f, i) => {
   const row = reportRows.find((line) => line.startsWith(`| ${i + 1} | `));
   const head = `| ${i + 1} | ${FINDINGS[f].title} | ${SEVERITY[f]} | \`${defects.locations[f]}\` | \``;
   const spec = `${findingSpecs[f]?.[0]}\` | `;
-  if (!row || !row.startsWith(head) || !row.includes(spec)) {
-    problems.push(`SAMPLE_REPORT.md row ${i + 1} does not match the current title, severity, location and spec of ${f} (run npm run review)`);
+  const tail = `| ${FINDINGS[f].fix} | Closed |`;
+  if (!row || !row.startsWith(head) || !row.includes(spec) || !row.endsWith(tail)) {
+    problems.push(`SAMPLE_REPORT.md row ${i + 1} does not match the current title, severity, location, spec and fix of ${f} (run npm run review)`);
   }
 });
 

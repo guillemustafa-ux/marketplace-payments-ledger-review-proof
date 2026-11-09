@@ -98,9 +98,12 @@ describe('payments ledger review', () => {
     expect(await balance(platformAccount)).toBe(180);
   });
 
-  it('CONTROL tampered payload is rejected', async () => {
-    const response = await h.deliverWithSecret(chargeEvent('evt_tampered', charge('ch_1', 1000)), 'whsec_wrong_secret');
-    expect(response.status).toBe(401);
+  it('CONTROL a tampered payload or a wrong signing secret is rejected', async () => {
+    const signed = chargeEvent('evt_tampered', charge('ch_1', 1000));
+    const tampered = await h.deliverTampered(signed, chargeEvent('evt_tampered', charge('ch_1', 100000)));
+    expect(tampered.status).toBe(401);
+    const wrongSecret = await h.deliverWithSecret(chargeEvent('evt_wrong_secret', charge('ch_2', 1000)), 'whsec_wrong_secret');
+    expect(wrongSecret.status).toBe(401);
     expect(await balance(creatorAccount)).toBe(0);
     expect(await balance(referrerAccount)).toBe(0);
     expect(await balance(platformAccount)).toBe(0);
@@ -114,14 +117,19 @@ describe('payments ledger review', () => {
   });
 
   it('CONTROL a refund announced by refund.created and charge.refunded is reversed once', async () => {
-    await send(chargeEvent('evt_capture', charge('ch_1', 1000)));
-    await send(refundEvent('evt_refund', refund('re_1', 1000, 'ch_1')));
-    await send(chargeRefundedEvent('evt_charge_refunded', charge('ch_1', 1000)));
-    expect(await balance(creatorAccount)).toBe(0);
-    expect(await balance(referrerAccount)).toBe(0);
-    expect(await balance(platformAccount)).toBe(0);
-    expect(await balance('external')).toBe(0);
-    expect(await transactions('refund')).toBe(1);
+    // Partial refunds, so a second reversal of the same refund would show in every balance.
+    // ch_1 gets refund.created first, ch_2 gets charge.refunded first.
+    await send(chargeEvent('evt_capture_1', charge('ch_1', 1000)));
+    await send(refundEvent('evt_refund_1', refund('re_1', 300, 'ch_1')));
+    await send(chargeRefundedEvent('evt_charge_refunded_1', charge('ch_1', 1000)));
+    await send(chargeEvent('evt_capture_2', charge('ch_2', 1000)));
+    await send(chargeRefundedEvent('evt_charge_refunded_2', charge('ch_2', 1000)));
+    await send(refundEvent('evt_refund_2', refund('re_2', 300, 'ch_2')));
+    expect(await balance(creatorAccount)).toBe(1120);
+    expect(await balance(referrerAccount)).toBe(28);
+    expect(await balance(platformAccount)).toBe(252);
+    expect(await balance('external')).toBe(-1400);
+    expect(await transactions('refund')).toBe(2);
   });
 
   it('F1 a redelivered event is recorded once and credits the creator once', async () => {
@@ -204,11 +212,14 @@ describe('payments ledger review', () => {
     expect(diffs).toEqual([{ creator_id: CREATOR, ledger_cents: 700, provider_cents: 800 }]);
   });
 
-  it('F7 a lost capture response and a repeated order capture once', async () => {
+  it('F7 a lost capture response and an order repeated after a restart capture once', async () => {
     const order = { order_id: 'ord_1', amount: 1000, creator_id: CREATOR, referrer_id: REFERRER };
     h.provider.failNextCapture('drop-response');
     const first = await postJson('/capture', order);
     expect(first.status).toBe(200);
+    // A new app and ledger instance on the same database: the key must come from the database,
+    // not from process memory.
+    await h.restartApp();
     const second = await postJson('/capture', order);
     expect(second.status).toBe(200);
     const count = h.provider.captureCount();
@@ -232,18 +243,33 @@ describe('payments ledger review', () => {
   });
 
   it('F9 an unknown payout outcome is looked up and a repeated payout request pays once', async () => {
-    const request = { creator_id: CREATOR, amount: 800, client_reference: 'po_1' };
+    // po_1: the provider pays, then the connection drops.
+    const lost = { creator_id: CREATOR, amount: 800, client_reference: 'po_1' };
     h.provider.failNextPayout('drop-response');
-    const first = await postJson('/payout', request);
-    expect(first.status).toBe(200);
-    expect(first.json.status).toBe('paid');
-    const second = await postJson('/payout', request);
-    expect(second.status).toBe(200);
-    expect(second.json.status).toBe('paid');
+    const lostFirst = await postJson('/payout', lost);
+    expect(lostFirst.status).toBe(200);
+    expect(lostFirst.json.status).toBe('paid');
+    const lostRepeat = await postJson('/payout', lost);
+    expect(lostRepeat.json.status).toBe('paid');
+    // po_2: the provider pays, then answers 500. The repeated request must find it, not pay again.
+    const paidThenError = { creator_id: CREATOR, amount: 100, client_reference: 'po_2' };
+    h.provider.failNextPayout('error-after-commit');
+    expect((await postJson('/payout', paidThenError)).status).toBe(200);
+    const paidThenErrorRepeat = await postJson('/payout', paidThenError);
+    expect(paidThenErrorRepeat.json.status).toBe('paid');
+    // po_3: the provider answers 500 and pays nothing. The repeated request must pay it.
+    const notPaid = { creator_id: CREATOR, amount: 200, client_reference: 'po_3' };
+    h.provider.failNextPayout('error-before-commit');
+    expect((await postJson('/payout', notPaid)).status).toBe(200);
+    const notPaidRepeat = await postJson('/payout', notPaid);
+    expect(notPaidRepeat.json.status).toBe('paid');
+
     const count = h.provider.payoutCount();
-    record('F9', 'payouts created', count, 1);
-    expect(count).toBe(1);
-    expect(h.provider.payoutsByReference('po_1').length).toBe(1);
-    expect(await balance(creatorAccount)).toBe(-800);
+    record('F9', 'payouts created for 3 payout requests', count, 3);
+    expect(count).toBe(3);
+    for (const reference of ['po_1', 'po_2', 'po_3']) {
+      expect(h.provider.payoutsByReference(reference).length, reference).toBe(1);
+    }
+    expect(await balance(creatorAccount)).toBe(-1100);
   });
 });

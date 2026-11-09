@@ -20,7 +20,12 @@ export interface ProviderPayout {
 }
 
 export type CaptureFault = 'drop-response';
-export type PayoutFault = 'drop-response';
+/**
+ * drop-response: the payout is made, then the connection drops (the client sees an error).
+ * error-after-commit: the payout is made, then the provider answers 500.
+ * error-before-commit: the provider answers 500 and makes no payout.
+ */
+export type PayoutFault = 'drop-response' | 'error-after-commit' | 'error-before-commit';
 
 export interface FakeProvider {
   url: string;
@@ -104,6 +109,11 @@ export async function startFakeProvider(): Promise<FakeProvider> {
   async function handlePayout(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = (await readJson(req)) as { amount: number; client_reference: string; destination: string };
     const fault = payoutFaults.shift();
+    if (fault === 'error-before-commit') {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'provider_error' }));
+      return;
+    }
     const payout: ProviderPayout = {
       id: `po_${++seq}`,
       client_reference: body.client_reference,
@@ -115,6 +125,11 @@ export async function startFakeProvider(): Promise<FakeProvider> {
     if (fault === 'drop-response') {
       // Committed, then the response is dropped: an unknown outcome for the client.
       req.socket.destroy();
+      return;
+    }
+    if (fault === 'error-after-commit') {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'provider_error' }));
       return;
     }
     res.writeHead(200, { 'content-type': 'application/json' });
