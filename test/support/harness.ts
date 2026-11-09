@@ -24,11 +24,18 @@ export interface Harness {
   close(): Promise<void>;
 }
 
+/** `TARGET=v1|v2` picks the version under test; unset means v2, anything else is an error. */
+export function target(): 'v1' | 'v2' {
+  const value = process.env.TARGET || 'v2';
+  if (value !== 'v1' && value !== 'v2') throw new Error(`TARGET must be v1 or v2, got "${value}"`);
+  return value;
+}
+
 export async function startHarness(databaseUrl: string): Promise<Harness> {
   const pool = new pg.Pool({ connectionString: databaseUrl });
   const provider = await startFakeProvider();
   const deps = { pool, providerUrl: provider.url };
-  const ledger = process.env.TARGET === 'v1' ? createV1Ledger(deps) : createV2Ledger(deps);
+  const ledger = target() === 'v1' ? createV1Ledger(deps) : createV2Ledger(deps);
   const app: RunningApp = await startApp({ ledger, webhookSecret: WEBHOOK_SECRET });
 
   return {

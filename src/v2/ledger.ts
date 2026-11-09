@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { balanceOf, ledgerCaptureAmounts } from '../common/db.js';
-import { captureSplit, dayOf, refundSplit } from '../common/math.js';
+import { captureSplit, dayOf, reversalSplit } from '../common/math.js';
 import type {
+  CaptureInput,
   Charge,
   Dispute,
   Ledger,
@@ -28,6 +29,20 @@ interface ChargeRecord {
   referrer_id: string;
 }
 
+/** A refund or a dispute: money that goes back out of a captured charge. */
+interface Reversal {
+  kind: 'refund' | 'dispute';
+  id: string;
+  chargeId: string;
+  amount: number;
+}
+
+interface PayoutInput {
+  creator_id: string;
+  amount: number;
+  client_reference: string;
+}
+
 export interface LedgerDeps {
   pool: Pool;
   providerUrl: string;
@@ -51,12 +66,15 @@ export function createV2Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
       if (event.type === 'charge.succeeded') {
         await recordCapture(client, event.data.object as Charge, day);
       } else if (event.type === 'refund.created') {
-        await recordRefund(client, event.data.object as Refund, day);
-      } else if (event.type === 'charge.refunded') {
-        await handleChargeRefunded(client, event.data.object as Charge, day);
+        const refund = event.data.object as Refund;
+        // FIX F4: key the refund by the refund id, not the charge id.
+        await reverse(client, { kind: 'refund', id: refund.id, chargeId: refund.charge, amount: refund.amount }, day);
       } else if (event.type === 'charge.dispute.created') {
-        await recordDispute(client, event.data.object as Dispute, day);
+        const dispute = event.data.object as Dispute;
+        await reverse(client, { kind: 'dispute', id: dispute.id, chargeId: dispute.charge, amount: dispute.amount }, day);
       }
+      // `charge.refunded` carries the charge, not the refund. Money moves from `refund.created`
+      // only, so one refund is never reversed twice from two event types.
       await client.query('commit');
     } catch (error) {
       await client.query('rollback');
@@ -66,20 +84,38 @@ export function createV2Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
     }
   }
 
-  async function capture(input: { amount: number; creator_id: string; referrer_id: string }): Promise<{ ok: boolean }> {
-    // FIX F7: one idempotency key per money movement, stored before the first send and reused on every retry.
-    const key = randomUUID();
-    const charge = await sendCaptureWithRetry(input, key);
+  async function capture(input: CaptureInput): Promise<{ ok: boolean }> {
+    // FIX F7: one idempotency key per order, stored before the first send and reused on every retry.
+    await pool.query('insert into capture_intents (order_id, idempotency_key) values ($1, $2) on conflict (order_id) do nothing', [
+      input.order_id,
+      randomUUID(),
+    ]);
+    const intent = await pool.query('select idempotency_key from capture_intents where order_id = $1', [input.order_id]);
+    const charge = await sendCaptureWithRetry(input, String(intent.rows[0].idempotency_key));
     await recordCaptureFromApi(charge);
     return { ok: true };
   }
 
-  async function payout(input: { creator_id: string; amount: number; client_reference: string }): Promise<PayoutOutcome> {
-    // Persist the intent with a client_reference before sending (the F9 fix continues in sendPayout).
-    await pool.query(
+  async function payout(input: PayoutInput): Promise<PayoutOutcome> {
+    // FIX F9: persist the payout intent before the first send and read it on every request.
+    const inserted = await pool.query(
       'insert into payout_intents (client_reference, status) values ($1, $2) on conflict (client_reference) do nothing',
       [input.client_reference, 'pending'],
     );
+    if ((inserted.rowCount ?? 0) === 0) {
+      const intent = await pool.query('select status, payout_id from payout_intents where client_reference = $1', [
+        input.client_reference,
+      ]);
+      const row = intent.rows[0] as { status: string; payout_id: string | null };
+      if (row.status === 'paid' && row.payout_id) return { status: 'paid', payout_id: row.payout_id };
+      // Pending or unknown: an earlier send may have reached the provider, so ask it first.
+      const found = await lookupPayout(input.client_reference);
+      if (found) {
+        await markPayoutPaid(input, found.id, found.created ?? 1730000000);
+        return { status: 'paid', payout_id: found.id };
+      }
+      // The provider has no payout for this reference: sending it now cannot pay twice.
+    }
     return sendPayout(input);
   }
 
@@ -110,10 +146,7 @@ export function createV2Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
     return balanceOf(pool, account);
   }
 
-  async function sendCaptureWithRetry(
-    input: { amount: number; creator_id: string; referrer_id: string },
-    key: string,
-  ): Promise<Charge> {
+  async function sendCaptureWithRetry(input: CaptureInput, key: string): Promise<Charge> {
     let lastError: unknown = new Error('capture not attempted');
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
@@ -146,7 +179,7 @@ export function createV2Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
     }
   }
 
-  async function sendPayout(input: { creator_id: string; amount: number; client_reference: string }): Promise<PayoutOutcome> {
+  async function sendPayout(input: PayoutInput): Promise<PayoutOutcome> {
     try {
       const response = await fetch(`${providerUrl}/v1/payouts`, {
         method: 'POST',
@@ -154,15 +187,15 @@ export function createV2Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
         body: JSON.stringify({ amount: input.amount, client_reference: input.client_reference, destination: input.creator_id }),
       });
       if (response.ok) {
-        const payout = (await response.json()) as { id: string; created?: number };
-        await markPayoutPaid(input, payout.id, payout.created ?? 1730000000);
-        return { status: 'paid', payout_id: payout.id };
+        const paid = (await response.json()) as { id: string; created?: number };
+        await markPayoutPaid(input, paid.id, paid.created ?? 1730000000);
+        return { status: 'paid', payout_id: paid.id };
       }
       await markPayoutUnknown(input.client_reference);
       return { status: 'unknown' };
     } catch {
-      // FIX F9: after an unknown outcome, look the payout up by client_reference; if the
-      // lookup cannot decide, stop and escalate, never resend blindly.
+      // Unknown outcome: look the payout up by client_reference. If the provider has none,
+      // return unknown and do not resend here; the next request resolves it by lookup.
       const found = await lookupPayout(input.client_reference);
       if (found) {
         await markPayoutPaid(input, found.id, found.created ?? 1730000000);
@@ -184,7 +217,7 @@ export function createV2Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
     await pool.query('update payout_intents set status = $1 where client_reference = $2', ['unknown', clientReference]);
   }
 
-  async function markPayoutPaid(input: { creator_id: string; amount: number; client_reference: string }, payoutId: string, created: number): Promise<void> {
+  async function markPayoutPaid(input: PayoutInput, payoutId: string, created: number): Promise<void> {
     const client = await pool.connect();
     try {
       await client.query('begin');
@@ -195,7 +228,11 @@ export function createV2Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
           { account: EXTERNAL, amount: input.amount },
         ]);
       }
-      await client.query('update payout_intents set status = $1 where client_reference = $2', ['paid', input.client_reference]);
+      await client.query('update payout_intents set status = $1, payout_id = $2 where client_reference = $3', [
+        'paid',
+        payoutId,
+        input.client_reference,
+      ]);
       await client.query('commit');
     } catch (error) {
       await client.query('rollback');
@@ -219,79 +256,63 @@ export function createV2Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
       'insert into charges (charge_id, amount_cents, creator_id, referrer_id) values ($1, $2, $3, $4) on conflict (charge_id) do nothing',
       [charge.id, charge.amount, charge.metadata.creator_id, charge.metadata.referrer_id],
     );
-    // Apply any refund that was parked before this capture arrived (see the F3 fix below).
-    await applyPendingRefunds(client, charge.id, day);
+    await applyPendingReversals(client, charge.id);
   }
 
-  async function recordRefund(client: PoolClient, refund: Refund, day: string): Promise<void> {
-    const charge = await lookupCharge(client, refund.charge);
-    if (!charge) return;
-    // FIX F4: key the refund by the refund id, not the charge id.
-    const txId = await insertTransaction(client, refund.id, 'refund', day);
-    if (txId == null) return;
-    // FIX F5: integer split with the remainder assigned to one party, so the parts sum exactly.
-    const split = refundSplit(charge.amount_cents, refund.amount);
-    await insertLines(client, txId, [
-      { account: creatorAccount(charge.creator_id), amount: -split.creator },
-      { account: referrerAccount(charge.referrer_id), amount: -split.referrer },
-      { account: PLATFORM, amount: -split.platform },
-      { account: EXTERNAL, amount: refund.amount },
-    ]);
-  }
-
-  async function handleChargeRefunded(client: PoolClient, charge: Charge, day: string): Promise<void> {
-    const refundAmount = charge.amount_refunded ?? charge.amount;
-    const existing = await lookupCharge(client, charge.id);
-    if (!existing) {
-      // FIX F3: park the refund and apply it once the capture exists.
+  async function reverse(client: PoolClient, reversal: Reversal, day: string): Promise<void> {
+    const charge = await lookupCharge(client, reversal.chargeId);
+    if (!charge) {
+      // FIX F3: park a refund or dispute that arrives before its capture and apply it once the capture exists.
       await client.query(
-        'insert into pending_refunds (charge_id, amount_cents) values ($1, $2) on conflict (charge_id) do nothing',
-        [charge.id, refundAmount],
+        `insert into pending_reversals (provider_object_id, kind, charge_id, amount_cents, day)
+         values ($1, $2, $3, $4, $5)
+         on conflict (provider_object_id, kind) do nothing`,
+        [reversal.id, reversal.kind, reversal.chargeId, reversal.amount, day],
       );
       return;
     }
-    const txId = await insertTransaction(client, charge.id, 'refund', day);
-    if (txId == null) return;
-    const split = refundSplit(existing.amount_cents, refundAmount);
-    await insertLines(client, txId, [
-      { account: creatorAccount(existing.creator_id), amount: -split.creator },
-      { account: referrerAccount(existing.referrer_id), amount: -split.referrer },
-      { account: PLATFORM, amount: -split.platform },
-      { account: EXTERNAL, amount: refundAmount },
-    ]);
+    await applyReversal(client, reversal, charge, day);
   }
 
-  async function applyPendingRefunds(client: PoolClient, chargeId: string, day: string): Promise<void> {
-    const pending = await client.query('select charge_id, amount_cents from pending_refunds where charge_id = $1', [chargeId]);
-    for (const row of pending.rows) {
-      const charge = await lookupCharge(client, chargeId);
-      if (!charge) continue;
-      const txId = await insertTransaction(client, chargeId, 'refund', day);
-      if (txId != null) {
-        const split = refundSplit(charge.amount_cents, Number(row.amount_cents));
-        await insertLines(client, txId, [
-          { account: creatorAccount(charge.creator_id), amount: -split.creator },
-          { account: referrerAccount(charge.referrer_id), amount: -split.referrer },
-          { account: PLATFORM, amount: -split.platform },
-          { account: EXTERNAL, amount: Number(row.amount_cents) },
-        ]);
-      }
-      await client.query('delete from pending_refunds where charge_id = $1', [chargeId]);
-    }
-  }
-
-  async function recordDispute(client: PoolClient, dispute: Dispute, day: string): Promise<void> {
-    const charge = await lookupCharge(client, dispute.charge);
+  async function applyPendingReversals(client: PoolClient, chargeId: string): Promise<void> {
+    const charge = await lookupCharge(client, chargeId);
     if (!charge) return;
-    const txId = await insertTransaction(client, dispute.charge, 'dispute', day);
+    const pending = await client.query(
+      'select provider_object_id, kind, amount_cents, day from pending_reversals where charge_id = $1 order by id',
+      [chargeId],
+    );
+    for (const row of pending.rows) {
+      const reversal: Reversal = { kind: row.kind, id: row.provider_object_id, chargeId, amount: Number(row.amount_cents) };
+      await applyReversal(client, reversal, charge, String(row.day));
+    }
+    await client.query('delete from pending_reversals where charge_id = $1', [chargeId]);
+  }
+
+  async function applyReversal(client: PoolClient, reversal: Reversal, charge: ChargeRecord, day: string): Promise<void> {
+    const chargeAmount = Number(charge.amount_cents);
+    const done = await client.query('select coalesce(sum(amount_cents), 0)::bigint as cents from reversals where charge_id = $1', [
+      reversal.chargeId,
+    ]);
+    const alreadyReversed = Number(done.rows[0].cents);
+    // A dispute takes back whatever is left of the charge; a refund never exceeds it.
+    const amount = Math.min(reversal.amount, chargeAmount - alreadyReversed);
+    if (amount <= 0) return;
+    const txId = await insertTransaction(client, reversal.id, reversal.kind, day);
     if (txId == null) return;
-    const split = captureSplit(charge.amount_cents);
-    // FIX F8: reverse the creator earnings AND the referral reward in the same ledger transaction.
+    // FIX F5: split against the running total already reversed, so the parts sum exactly and a full reversal in parts ends at zero.
+    const split = reversalSplit(chargeAmount, alreadyReversed, amount);
+    // FIX F8: a dispute reverses the creator earnings, the referral reward and the platform share, like a refund.
     await insertLines(client, txId, [
       { account: creatorAccount(charge.creator_id), amount: -split.creator },
       { account: referrerAccount(charge.referrer_id), amount: -split.referrer },
       { account: PLATFORM, amount: -split.platform },
-      { account: EXTERNAL, amount: charge.amount_cents },
+      { account: EXTERNAL, amount },
+    ]);
+    await client.query('insert into reversals (provider_object_id, kind, charge_id, amount_cents) values ($1, $2, $3, $4)', [
+      reversal.id,
+      reversal.kind,
+      reversal.chargeId,
+      amount,
     ]);
   }
 

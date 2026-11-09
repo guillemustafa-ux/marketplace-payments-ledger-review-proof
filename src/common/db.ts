@@ -1,20 +1,14 @@
-import { readFileSync } from 'node:fs';
 import type pg from 'pg';
 
 export { dayOf } from './math.js';
 
 export type Pool = pg.Pool;
 
-/** Read and run every schema file (in order) against a fresh database. */
-export async function applySchema(pool: Pool, files: string[]): Promise<void> {
-  for (const file of files) await pool.query(readFileSync(file, 'utf8'));
-}
-
 /** Wipe every table between test cases (tests share one database). */
 export async function truncateAll(pool: Pool): Promise<void> {
   await pool.query('truncate table charges, ledger_lines, ledger_transactions restart identity cascade');
   // v2-only tables: absent from the v1 schema, so a missing relation is fine.
-  for (const table of ['webhook_events', 'pending_refunds', 'payout_intents']) {
+  for (const table of ['webhook_events', 'reversals', 'pending_reversals', 'capture_intents', 'payout_intents']) {
     try {
       await pool.query(`truncate table ${table} restart identity`);
     } catch (error) {

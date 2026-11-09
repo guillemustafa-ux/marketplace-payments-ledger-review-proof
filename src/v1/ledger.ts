@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from 'pg';
 import { balanceOf } from '../common/db.js';
 import { captureSplit, dayOf, refundSplitRoundedPerLine } from '../common/math.js';
 import type {
+  CaptureInput,
   Charge,
   Dispute,
   Ledger,
@@ -45,11 +46,10 @@ export function createV1Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
         await recordCapture(client, event.data.object as Charge, day);
       } else if (event.type === 'refund.created') {
         await recordRefund(client, event.data.object as Refund, day);
-      } else if (event.type === 'charge.refunded') {
-        await handleChargeRefunded(client, event.data.object as Charge, day);
       } else if (event.type === 'charge.dispute.created') {
         await recordDispute(client, event.data.object as Dispute, day);
       }
+      // `charge.refunded` carries the charge, not the refund; money moves from `refund.created` only.
       await client.query('commit');
     } catch (error) {
       await client.query('rollback');
@@ -59,7 +59,7 @@ export function createV1Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
     }
   }
 
-  async function capture(input: { amount: number; creator_id: string; referrer_id: string }): Promise<{ ok: boolean }> {
+  async function capture(input: CaptureInput): Promise<{ ok: boolean }> {
     const charge = await sendCaptureWithRetry(input);
     await recordCaptureFromApi(charge);
     return { ok: true };
@@ -85,7 +85,7 @@ export function createV1Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
     return balanceOf(pool, account);
   }
 
-  async function sendCaptureWithRetry(input: { amount: number; creator_id: string; referrer_id: string }): Promise<Charge> {
+  async function sendCaptureWithRetry(input: CaptureInput): Promise<Charge> {
     let lastError: unknown = new Error('capture not attempted');
     for (let attempt = 0; attempt < 5; attempt++) {
       // DEFECT F7: a fresh idempotency key per attempt; a retry after a lost response captures twice.
@@ -178,8 +178,13 @@ export function createV1Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
     );
   }
 
+  async function chargeForReversal(client: PoolClient, chargeId: string): Promise<ChargeRecord | null> {
+    // DEFECT F3: a refund or dispute that arrives before its capture is dropped, so the creator keeps the full earnings.
+    return lookupCharge(client, chargeId);
+  }
+
   async function recordRefund(client: PoolClient, refund: Refund, day: string): Promise<void> {
-    const charge = await lookupCharge(client, refund.charge);
+    const charge = await chargeForReversal(client, refund.charge);
     if (!charge) return;
     // DEFECT F4: refunds are deduplicated by (charge id, type), so a second partial refund
     // on the same charge is dropped.
@@ -200,31 +205,13 @@ export function createV1Ledger({ pool, providerUrl }: LedgerDeps): Ledger {
     ]);
   }
 
-  async function handleChargeRefunded(client: PoolClient, charge: Charge, day: string): Promise<void> {
-    const existing = await lookupCharge(client, charge.id);
-    if (!existing) {
-      // DEFECT F3: an out-of-order refund is dropped and the creator keeps the full earnings.
-      return;
-    }
-    const refundAmount = charge.amount_refunded ?? charge.amount;
-    const txId = await insertTransaction(client, charge.id, 'refund', day);
-    if (txId == null) return;
-    const split = refundSplitRoundedPerLine(existing.amount_cents, refundAmount);
-    await insertLines(client, txId, [
-      { account: creatorAccount(existing.creator_id), amount: -split.creator },
-      { account: referrerAccount(existing.referrer_id), amount: -split.referrer },
-      { account: PLATFORM, amount: -split.platform },
-      { account: EXTERNAL, amount: refundAmount },
-    ]);
-  }
-
   async function recordDispute(client: PoolClient, dispute: Dispute, day: string): Promise<void> {
-    const charge = await lookupCharge(client, dispute.charge);
+    const charge = await chargeForReversal(client, dispute.charge);
     if (!charge) return;
-    const txId = await insertTransaction(client, dispute.charge, 'dispute', day);
+    const txId = await insertTransaction(client, dispute.id, 'dispute', day);
     if (txId == null) return;
-    const split = captureSplit(charge.amount_cents);
-    // DEFECT F8: reverse the creator earnings but leave the referral reward paid.
+    const split = captureSplit(Number(charge.amount_cents));
+    // DEFECT F8: reverse the creator earnings but leave the referral reward and the platform share in place.
     await insertLines(client, txId, [
       { account: creatorAccount(charge.creator_id), amount: -split.creator },
       { account: EXTERNAL, amount: split.creator },

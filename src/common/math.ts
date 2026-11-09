@@ -32,16 +32,30 @@ export function captureSplit(amountCents: number): CaptureSplit {
 }
 
 /**
- * Correct refund split: floor each proportional share, then assign the remainder to the
- * platform so the three parts always sum exactly to the refund amount.
+ * The shares due when `reversedCents` of a charge have been reversed in total: creator and
+ * referrer are floored, and the platform takes the remainder, so the three always sum to
+ * `reversedCents`. When the whole charge is reversed they equal the capture split exactly.
  */
-export function refundSplit(amountCents: number, refundAmountCents: number): RefundSplit {
+function sharesReversed(amountCents: number, reversedCents: number): RefundSplit {
   const split = captureSplit(amountCents);
-  const creator = Math.floor((split.creator * refundAmountCents) / amountCents);
-  const referrer = Math.floor((split.referrer * refundAmountCents) / amountCents);
-  const platform = Math.floor((split.platform * refundAmountCents) / amountCents);
-  const remainder = refundAmountCents - creator - referrer - platform;
-  return { creator, referrer, platform: platform + remainder };
+  const creator = Math.floor((split.creator * reversedCents) / amountCents);
+  const referrer = Math.floor((split.referrer * reversedCents) / amountCents);
+  return { creator, referrer, platform: reversedCents - creator - referrer };
+}
+
+/**
+ * Correct reversal split, against the running total already reversed on the charge: the
+ * parts of each reversal sum exactly to it, and a charge reversed in full (in one part or
+ * several) leaves every party at zero.
+ */
+export function reversalSplit(amountCents: number, alreadyReversedCents: number, reversalCents: number): RefundSplit {
+  const before = sharesReversed(amountCents, alreadyReversedCents);
+  const after = sharesReversed(amountCents, alreadyReversedCents + reversalCents);
+  return {
+    creator: after.creator - before.creator,
+    referrer: after.referrer - before.referrer,
+    platform: after.platform - before.platform,
+  };
 }
 
 /**

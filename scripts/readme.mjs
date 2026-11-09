@@ -30,34 +30,61 @@ if (titles.length !== controls.length + Object.values(findingSpecs).flat().lengt
   problems.push('every spec must be named "F<n> ..." or "CONTROL ..."');
 }
 
-// 2. One footgun per fix, each naming exactly its own spec.
+// 2. One footgun per fix. Footgun f<n> must name the F<n> spec; it may also name other finding
+// specs its edit breaks (f4 also breaks F5, whose full-refund-in-parts check needs every partial).
 const manifest = JSON.parse(readFileSync(join(root, 'footguns', 'manifest.json'), 'utf8'));
 const footgunFor = {};
 for (const [name, entry] of Object.entries(manifest)) {
-  const expected = entry.expectedFailures;
-  const ids = expected.map(findingId);
-  if (expected.length !== 1 || !ids[0]) {
-    problems.push(`footgun ${name} must name exactly one F spec`);
+  const own = /^f([1-9])$/.exec(name);
+  if (!own) {
+    problems.push(`footgun ${name} must be named f<n>`);
     continue;
   }
-  footgunFor[ids[0]] = name;
-  if (!titles.includes(expected[0])) problems.push(`footgun ${name} names a spec that does not exist: ${expected[0]}`);
+  const f = `F${own[1]}`;
+  const expected = entry.expectedFailures ?? [];
+  if (!expected.some((title) => findingId(title) === f)) problems.push(`footgun ${name} must name the ${f} spec`);
+  for (const title of expected) {
+    if (!titles.includes(title)) problems.push(`footgun ${name} names a spec that does not exist: ${title}`);
+    else if (!findingId(title)) problems.push(`footgun ${name} may name only finding specs, not: ${title}`);
+  }
+  footgunFor[f] = name;
 }
 for (const f of F_NAMES) if (!footgunFor[f]) problems.push(`no footgun for ${f}`);
 
-// 3. The review stats written by `npm run review`.
-const reportPath = join(root, 'SAMPLE_REPORT.md');
-let stats = null;
-if (existsSync(reportPath)) {
-  const match = /<!-- review-stats ([^>]+) -->/.exec(readFileSync(reportPath, 'utf8'));
-  if (match) stats = Object.fromEntries(match[1].trim().split(/\s+/).map((pair) => pair.split('=')));
-}
-if (!stats) problems.push('SAMPLE_REPORT.md has no review-stats line (run npm run review)');
-else if (Number(stats.findingsOpen) !== F_NAMES.length) problems.push('SAMPLE_REPORT.md findingsOpen does not match the findings');
-
-// 4. Render.
+// 3. The sample report written by `npm run review`: its stats and, for every finding, the
+// current title, severity, v1 location and spec, so a stale report fails the check.
 const severityCounts = { Critical: 0, High: 0, Medium: 0 };
 for (const f of F_NAMES) severityCounts[SEVERITY[f]] += 1;
+
+const reportPath = join(root, 'SAMPLE_REPORT.md');
+const report = existsSync(reportPath) ? readFileSync(reportPath, 'utf8') : '';
+let stats = null;
+const statsMatch = /<!-- review-stats ([^>]+) -->/.exec(report);
+if (statsMatch) stats = Object.fromEntries(statsMatch[1].trim().split(/\s+/).map((pair) => pair.split('=')));
+if (!stats) problems.push('SAMPLE_REPORT.md has no review-stats line (run npm run review)');
+else {
+  const expectedStats = {
+    findingsOpen: F_NAMES.length,
+    retestsClosed: F_NAMES.length,
+    critical: severityCounts.Critical,
+    high: severityCounts.High,
+    medium: severityCounts.Medium,
+  };
+  for (const [key, value] of Object.entries(expectedStats)) {
+    if (Number(stats[key]) !== value) problems.push(`SAMPLE_REPORT.md ${key} is ${stats[key]}, expected ${value} (run npm run review)`);
+  }
+}
+const reportRows = report.split(/\r?\n/);
+F_NAMES.forEach((f, i) => {
+  const row = reportRows.find((line) => line.startsWith(`| ${i + 1} | `));
+  const head = `| ${i + 1} | ${FINDINGS[f].title} | ${SEVERITY[f]} | \`${defects.locations[f]}\` | \``;
+  const spec = `${findingSpecs[f]?.[0]}\` | `;
+  if (!row || !row.startsWith(head) || !row.includes(spec)) {
+    problems.push(`SAMPLE_REPORT.md row ${i + 1} does not match the current title, severity, location and spec of ${f} (run npm run review)`);
+  }
+});
+
+// 4. Render.
 
 const regions = {
   stats: [
@@ -75,9 +102,11 @@ const regions = {
     ),
   ].join('\n'),
   footguns: [
-    '| Footgun | What it reintroduces | Spec that must fail |',
+    '| Footgun | What it reintroduces | Specs that must fail |',
     '| --- | --- | --- |',
-    ...Object.entries(manifest).map(([name, entry]) => `| \`${name}\` | ${entry.description} | \`${entry.expectedFailures[0]}\` |`),
+    ...Object.entries(manifest).map(
+      ([name, entry]) => `| \`${name}\` | ${entry.description} | ${entry.expectedFailures.map((title) => `\`${title}\``).join(', ')} |`,
+    ),
   ].join('\n'),
 };
 

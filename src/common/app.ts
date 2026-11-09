@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { Ledger, WebhookEvent } from './types.js';
+import type { CaptureInput, Ledger, WebhookEvent } from './types.js';
 import { verifySignature } from './webhook.js';
 
 export interface AppConfig {
@@ -47,7 +47,7 @@ export async function startApp({ ledger, webhookSecret }: AppConfig): Promise<Ru
   }
 
   async function handleCapture(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const body = (await readJson(req)) as { amount: number; creator_id: string; referrer_id: string };
+    const body = (await readJson(req)) as CaptureInput;
     const result = await ledger.capture(body);
     send(res, 200, result);
   }

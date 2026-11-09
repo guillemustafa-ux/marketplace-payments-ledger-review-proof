@@ -20,12 +20,11 @@ export interface ProviderPayout {
 }
 
 export type CaptureFault = 'drop-response';
-export type PayoutFault = 'drop-response' | 'fail-late';
+export type PayoutFault = 'drop-response';
 
 export interface FakeProvider {
   url: string;
   close(): Promise<void>;
-  reset(): void;
   failNextCapture(fault: CaptureFault): void;
   failNextPayout(fault: PayoutFault): void;
   seedCapture(input: { id: string; amount: number; creator_id: string; referrer_id: string; created: number }): void;
@@ -33,20 +32,14 @@ export interface FakeProvider {
   totalCapturedCents(): number;
   payoutCount(): number;
   payoutsByReference(clientReference: string): ProviderPayout[];
-  /** Per-creator net capture amounts for one day, computed by the provider (the source of truth). */
-  reconciliation(day: string): { creator_id: string; amount_cents: number }[];
-  /** Payouts that "failed late": the fault failed first, then queued a `payout.failed`. */
-  takeLateFailures(): ProviderPayout[];
 }
 
 export async function startFakeProvider(): Promise<FakeProvider> {
   const captures: ProviderCapture[] = [];
   const capturesByKey = new Map<string, ProviderCapture>();
   const payouts: ProviderPayout[] = [];
-  const lateFailures: ProviderPayout[] = [];
   const captureFaults: CaptureFault[] = [];
   const payoutFaults: PayoutFault[] = [];
-  const timers = new Set<NodeJS.Timeout>();
   let seq = 0;
 
   const server = createServer((req, res) => {
@@ -111,20 +104,6 @@ export async function startFakeProvider(): Promise<FakeProvider> {
   async function handlePayout(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = (await readJson(req)) as { amount: number; client_reference: string; destination: string };
     const fault = payoutFaults.shift();
-    if (fault === 'fail-late') {
-      // Fails first (not committed), then reports the failure late via `payout.failed`.
-      const payout: ProviderPayout = {
-        id: `po_${++seq}`,
-        client_reference: body.client_reference,
-        amount: body.amount,
-        destination: body.destination,
-        created: 1730000000 + seq,
-      };
-      lateFailures.push(payout);
-      res.writeHead(500, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'payout_failed' }));
-      return;
-    }
     const payout: ProviderPayout = {
       id: `po_${++seq}`,
       client_reference: body.client_reference,
@@ -173,17 +152,8 @@ export async function startFakeProvider(): Promise<FakeProvider> {
   return {
     url: `http://127.0.0.1:${port}`,
     close: async () => {
-      for (const timer of timers) clearTimeout(timer);
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
-    },
-    reset: () => {
-      captures.length = 0;
-      capturesByKey.clear();
-      payouts.length = 0;
-      lateFailures.length = 0;
-      captureFaults.length = 0;
-      payoutFaults.length = 0;
     },
     failNextCapture: (fault) => captureFaults.push(fault),
     failNextPayout: (fault) => payoutFaults.push(fault),
@@ -201,16 +171,6 @@ export async function startFakeProvider(): Promise<FakeProvider> {
     totalCapturedCents: () => captures.reduce((sum, c) => sum + c.amount, 0),
     payoutCount: () => payouts.length,
     payoutsByReference: (ref) => payouts.filter((p) => p.client_reference === ref),
-    reconciliation: (day) => {
-      const byCreator = new Map<string, number>();
-      for (const capture of captures) {
-        if (dayOf(capture.created) !== day) continue;
-        const split = captureSplit(capture.amount);
-        byCreator.set(capture.creator_id, (byCreator.get(capture.creator_id) ?? 0) + split.creator);
-      }
-      return [...byCreator.entries()].map(([creator_id, amount_cents]) => ({ creator_id, amount_cents }));
-    },
-    takeLateFailures: () => lateFailures.splice(0),
   };
 }
 

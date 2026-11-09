@@ -26,7 +26,8 @@ const SCHEMA_FILES = {
  * Either way the tests get a brand-new database that is dropped at the end.
  */
 export default async function setup(project: TestProject) {
-  const target = process.env.TARGET === 'v1' ? 'v1' : 'v2';
+  const target = process.env.TARGET || 'v2';
+  if (target !== 'v1' && target !== 'v2') throw new Error(`TARGET must be v1 or v2, got "${target}"`);
   const schemaFiles = SCHEMA_FILES[target];
   const external = (process.env.DATABASE_URL || '').replace(/"/g, '');
   let baseUrl = external;

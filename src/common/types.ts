@@ -6,8 +6,6 @@ export interface Charge {
   amount: number;
   currency: string;
   created?: number;
-  /** Present on `charge.refunded`: the total already refunded on this charge, in cents. */
-  amount_refunded?: number;
   metadata: {
     creator_id: string;
     referrer_id: string;
@@ -45,12 +43,18 @@ export type ProviderObject = Charge | Refund | Dispute | Payout;
 export interface WebhookEvent {
   id: string;
   type: string;
-  /** Unix seconds. Used as the reconciliation day and the event id (never for ordering). */
+  /** Unix seconds. Used only to pick the reconciliation day, never to order events. */
   created: number;
   data: { object: ProviderObject };
 }
 
-export type EntryType = 'capture' | 'refund' | 'dispute' | 'payout';
+/** A capture request. `order_id` is the caller's own id for the money movement. */
+export interface CaptureInput {
+  order_id: string;
+  amount: number;
+  creator_id: string;
+  referrer_id: string;
+}
 
 export interface CaptureSplit {
   creator: number;
@@ -79,7 +83,7 @@ export interface PayoutOutcome {
 /** The `Ledger` interface both versions implement; the HTTP shell delegates to it. */
 export interface Ledger {
   handleWebhook(event: WebhookEvent): Promise<void>;
-  capture(input: { amount: number; creator_id: string; referrer_id: string }): Promise<{ ok: boolean }>;
+  capture(input: CaptureInput): Promise<{ ok: boolean }>;
   payout(input: { creator_id: string; amount: number; client_reference: string }): Promise<PayoutOutcome>;
   reconcile(day: string): Promise<ReconcileDifference[]>;
   balance(account: string): Promise<number>;
