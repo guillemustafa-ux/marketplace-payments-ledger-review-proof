@@ -40,12 +40,16 @@ day, never to order events.
 
 Page: <https://docs.stripe.com/api/events/types.md>
 
-`charge.refunded` carries the charge, including partial refunds. The page lists
-``data.object` is one of: [`charge`]`` under it and describes it as:
+`charge.refunded` carries the charge, including partial refunds: the page lists `charge` as the
+type of its `data.object` and describes the event as:
 
 > Occurs whenever a charge is refunded, including partial refunds. Listen to `refund.created` for information about the refund.
 
-`refund.created` carries the refund (the page lists ``data.object` is one of: [`refund`]`` under it):
+For that reason the ledger moves refund money only from `refund.created`, keyed by the refund id,
+and records nothing for `charge.refunded`. A refund announced by both events is reversed once (a
+control spec checks it).
+
+`refund.created` carries the refund (the page lists `refund` as the type of its `data.object`):
 
 > Occurs whenever a refund is created.
 
