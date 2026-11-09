@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { F_NAMES, FINDINGS, SEVERITY, SEVERITY_SCALE, findingId, locateMarkers, root } from './findings.mjs';
+import { F_NAMES, FINDINGS, SEVERITY, SEVERITY_SCALE, findingId, locateMarkers, root, specTitles } from './findings.mjs';
 import { runVitest } from './run-vitest.mjs';
 
 const N = F_NAMES.length;
@@ -34,9 +34,14 @@ if (v1.failed === undefined) {
   console.error('review: the v1 run produced no report (infrastructure failure).');
   process.exit(1);
 }
+const titles = specTitles();
 const v1NonFinding = v1.failed.filter((name) => !findingId(name));
 const distinctIds = new Set(v1.failed.map(findingId).filter(Boolean));
-const exactlyAll = v1.failed.length === N && v1NonFinding.length === 0 && F_NAMES.every((f) => distinctIds.has(f));
+const exactlyAll =
+  v1.failed.length === N &&
+  v1NonFinding.length === 0 &&
+  F_NAMES.every((f) => distinctIds.has(f)) &&
+  v1.passed === titles.length - N;
 if (!exactlyAll) {
   console.error(`review FAILED: expected exactly ${F_NAMES.join(', ')} to fail on v1, got ${v1.failed.length} failure(s):`);
   for (const name of v1.failed) console.error(`  - ${name}`);
@@ -55,6 +60,10 @@ if (v2.failed === undefined) {
 if (v2.failed.length > 0) {
   console.error(`review FAILED: ${v2.failed.length} spec(s) failed on v2:`);
   for (const name of v2.failed) console.error(`  - ${name}`);
+  process.exit(1);
+}
+if (v2.exitCode !== 0 || v2.passed !== titles.length) {
+  console.error(`review FAILED: ${v2.passed} of ${titles.length} specs passed on v2 (vitest exit code ${v2.exitCode}).`);
   process.exit(1);
 }
 
