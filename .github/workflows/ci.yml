@@ -24,4 +24,5 @@ jobs:
       - run: npm test
       - run: npm run typecheck
       - run: npm run review
+      - run: git diff --exit-code
       - run: npm run footgun -- --all
