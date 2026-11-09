@@ -117,6 +117,9 @@ means v2; any other value is an error).
 
 Each run starts its own Postgres in a fresh directory under the OS temp folder and removes it
 afterwards. If `DATABASE_URL` is set, the tests use that server instead, in a new throwaway database.
+On Windows, Postgres refuses to start from an administrator account, so run the commands from a
+normal (not elevated) shell or set `DATABASE_URL`. `npm test` and `npm run review` fail unless every
+expected spec actually ran, so a database that never starts cannot read as green.
 
 ## The suite bites: footguns
 
@@ -231,8 +234,10 @@ Assumptions, none of them stated in the fetched pages:
   and does not enforce a timestamp tolerance; the harness signs with fixed timestamps.
 - Retries are capped at a fixed attempt count that no spec exercises, and there is one Postgres with
   no replicas.
-- The CI workflow in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) has not been run: nothing
-  here was pushed, so neither the Linux nor the Windows job is verified.
+- The CI workflow in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs every command above
+  on Ubuntu with the embedded Postgres 16, and on Windows with the runner's preinstalled PostgreSQL
+  (version 17 at the time of writing) through `DATABASE_URL`, because hosted Windows runners run as an
+  administrator. The embedded Postgres on Windows was exercised only on a developer machine.
 
 ## License
 

@@ -20,6 +20,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # Hosted Windows runners run as an administrator, and Postgres refuses to start under an
+      # administrator account, so embedded-postgres cannot run there. Use the runner's own
+      # PostgreSQL service instead (user postgres, password root, per the runner image readme).
+      - name: Start the runner's PostgreSQL (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $service = Get-Service -Name 'postgresql*' | Select-Object -First 1
+          Set-Service -Name $service.Name -StartupType Manual
+          Start-Service -Name $service.Name
+          "DATABASE_URL=postgres://postgres:root@127.0.0.1:5432/postgres" >> $env:GITHUB_ENV
       - run: npm ci
       - run: npm test
       - run: npm run typecheck
