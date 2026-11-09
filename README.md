@@ -1,6 +1,6 @@
 # marketplace-payments-ledger-review-proof
 
-An independent code review of a synthetic marketplace payments backend that anyone can re-run
+A code review of a synthetic marketplace payments backend that anyone can re-run
 offline. The backend ships in two versions: **v1** with nine planted money defects and **v2** with
 each of them fixed. A review suite finds each defect on v1 with a failing spec, confirms the same
 spec passes on v2, and writes a sample report ([`SAMPLE_REPORT.md`](SAMPLE_REPORT.md)) with
