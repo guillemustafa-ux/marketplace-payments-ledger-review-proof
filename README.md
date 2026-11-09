@@ -200,8 +200,9 @@ Known gaps in v2:
   1000-cent charge, a 1-cent refund after a 49-cent one takes 1 cent each from creator and referrer
   and gives 1 cent back to the platform. A full refund still ends at zero for every party.
 - **Reconciliation day.** The ledger dates a webhook capture by the event's `created`, and the
-  provider dates it by the charge's. An event delivered on a later day than its charge shows up as a
-  reconciliation difference. The harness sends both with the same timestamp.
+  provider dates it by the charge's. An event whose `created` falls on a later day than its charge's
+  shows up as a reconciliation difference; when the event is delivered does not matter. The harness
+  gives both the same timestamp.
 
 Assumptions, none of them stated in the fetched pages:
 
